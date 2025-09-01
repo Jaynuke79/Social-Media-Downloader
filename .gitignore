@@ -26,3 +26,4 @@ site/
 *.log
 
 media
+download_history.csv

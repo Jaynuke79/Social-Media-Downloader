@@ -822,7 +822,7 @@ def download_instagram_post(url: str) -> None:
     ensure_internet_connection()
 
     try:
-        loader = instaloader.Instaloader()
+        # Get organized download path first  
         shortcode = _extract_instagram_shortcode(url)
 
         if not shortcode:
@@ -830,13 +830,21 @@ def download_instagram_post(url: str) -> None:
             log_download(url, "Failed: Invalid URL format")
             return
 
-        post = instaloader.Post.from_shortcode(loader.context, shortcode)
+        # Create a temporary loader to get post info
+        temp_loader = instaloader.Instaloader()
+        post = instaloader.Post.from_shortcode(temp_loader.context, shortcode)
         
         # Get organized download path using Instagram username
         uploader = post.owner_username
         organized_path = get_organized_download_path(url, uploader_override=uploader)
         
-        loader.download_post(post, target=organized_path)
+        # Create loader with organized path as dirname_pattern
+        loader = instaloader.Instaloader(
+            dirname_pattern=organized_path,
+            filename_pattern="{date_utc}_UTC"
+        )
+        
+        loader.download_post(post, target="")
 
         log_download(url, "Success")
         print(f"\n\033[1;32mDownloaded Instagram post successfully:\033[0m {url}")
