@@ -4,7 +4,7 @@
 
 ## Suggestions
 
-### 1) Organizing Downloads [Implemented ([f73218c5](https://github.com/Jaynuke79/Social-Media-Downloader/commit/f73218c5204ad59965c0903623d09f7efcf4bf1c))]
+### 1) Organizing Downloads [Implemented ([f73218c5](https://github.com/Jaynuke79/Social-Media-Downloader/commit/f73218c5204ad59965c0903623d09f7efcf4bf1c))] [Refined and Fixed ([5c0f9e4](https://github.com/Jaynuke79/Social-Media-Downloader/commit/5c0f9e4e926df06adc0a26cfff0efa1e455e1197))]
 
 
 Have a subdirectory system within the default download location that organizes the downloads. 
