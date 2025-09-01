@@ -52,6 +52,7 @@ DEFAULT_CONFIG = {
     "download_directory": "media",
     "history_file": "download_history.csv",
     "mp3_quality": "192",
+    "organize_downloads": True,
 }
 
 VALID_DEFAULT_FORMATS = {
@@ -212,7 +213,7 @@ def load_config() -> Dict[str, Any]:
         return DEFAULT_CONFIG.copy()
 
     # Validate and fix configuration
-    config_data = _validate_config(config_data)
+    config_data, config_changed = _validate_config(config_data)
 
     # Save corrected config if needed
     if config_changed:
@@ -221,7 +222,7 @@ def load_config() -> Dict[str, Any]:
     return config_data
 
 
-def _validate_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_config(config_data: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     """
     Validate configuration data and fix invalid values.
 
@@ -229,7 +230,7 @@ def _validate_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
         config_data: Configuration dictionary to validate
 
     Returns:
-        Dict[str, Any]: Validated configuration dictionary
+        Tuple[Dict[str, Any], bool]: Validated configuration dictionary and whether changes were made
     """
     config_changed = False
 
@@ -258,7 +259,16 @@ def _validate_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
         config_data["default_format"] = "show_all"
         config_changed = True
 
-    return config_data
+    # Validate organize_downloads
+    organize_downloads = config_data.get("organize_downloads", False)
+    if not isinstance(organize_downloads, bool):
+        logging.warning(
+            f"Invalid organize_downloads '{organize_downloads}', resetting to False."
+        )
+        config_data["organize_downloads"] = False
+        config_changed = True
+
+    return config_data, config_changed
 
 
 def _save_config(config_data: Dict[str, Any]) -> None:
@@ -480,6 +490,119 @@ def is_valid_platform_url(url: str, allowed_domains: List[str]) -> bool:
     return any(domain in url.lower() for domain in allowed_domains)
 
 
+def detect_platform_from_url(url: str) -> str:
+    """
+    Detect the platform name from a URL.
+    
+    Args:
+        url: Video URL to analyze
+        
+    Returns:
+        str: Platform name (e.g., "YouTube", "TikTok", "Instagram", "Other")
+    """
+    url_lower = url.lower()
+    
+    # Platform mapping based on domain patterns
+    platform_map = {
+        "youtube.com": "YouTube",
+        "youtu.be": "YouTube",
+        "tiktok.com": "TikTok",
+        "instagram.com": "Instagram",
+        "facebook.com": "Facebook",
+        "fb.watch": "Facebook",
+        "x.com": "X",
+        "twitter.com": "X",
+        "twitch.tv": "Twitch",
+        "clips.twitch.tv": "Twitch",
+        "snapchat.com": "Snapchat",
+        "reddit.com": "Reddit",
+        "vimeo.com": "Vimeo",
+        "dailymotion.com": "Dailymotion",
+        "dai.ly": "Dailymotion",
+        "rumble.com": "Rumble",
+        "odysee.com": "Odysee",
+        "bilibili.tv": "Bilibili",
+        "pinterest.com": "Pinterest",
+        "pin.it": "Pinterest",
+        "linkedin.com": "LinkedIn",
+        "weibo.com": "Weibo",
+        "tumblr.com": "Tumblr",
+    }
+    
+    for domain, platform in platform_map.items():
+        if domain in url_lower:
+            return platform
+            
+    return "Other"
+
+
+def sanitize_filename(name: str) -> str:
+    """
+    Sanitize a string to be safe for use as a filename/directory name.
+    
+    Args:
+        name: String to sanitize
+        
+    Returns:
+        str: Sanitized string safe for filesystem
+    """
+    if not name or name.strip() == "":
+        return "Unknown"
+        
+    # Remove/replace characters that are problematic in filenames
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, "_")
+    
+    # Remove leading/trailing dots and spaces
+    name = name.strip(". ")
+    
+    # Limit length to reasonable filesystem limits
+    if len(name) > 100:
+        name = name[:100]
+        
+    # Ensure we don't end up with empty string
+    return name if name else "Unknown"
+
+
+def get_organized_download_path(url: str, info: Optional[Dict[str, Any]] = None, 
+                               uploader_override: Optional[str] = None) -> str:
+    """
+    Generate organized download path based on platform and uploader.
+    
+    Args:
+        url: Video URL
+        info: Video metadata from yt-dlp (optional)
+        uploader_override: Override uploader name (for Instagram)
+        
+    Returns:
+        str: Organized download directory path
+    """
+    # Check if organization is enabled
+    if not config.get("organize_downloads", False):
+        return download_directory
+        
+    platform = detect_platform_from_url(url)
+    
+    # Extract uploader/author name
+    uploader = "Unknown"
+    if uploader_override:
+        uploader = uploader_override
+    elif info:
+        uploader = info.get("uploader", info.get("channel", "Unknown"))
+    
+    # Sanitize the uploader name for filesystem
+    uploader = sanitize_filename(uploader)
+    
+    # Create organized path
+    organized_path = os.path.join(download_directory, platform, uploader)
+    
+    # Create directory if it doesn't exist
+    os.makedirs(organized_path, exist_ok=True)
+    
+    return organized_path
+
+
 # ---------------------------------
 # Format Display
 # ---------------------------------
@@ -578,7 +701,7 @@ def download_youtube_or_tiktok_video(url: str) -> None:
         format_choice = _get_format_choice(info)
 
         # Prepare download options
-        ydl_opts = _prepare_download_options(info, format_choice)
+        ydl_opts = _prepare_download_options(info, format_choice, url)
 
         # Perform download
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -642,15 +765,18 @@ def _get_format_choice(info: Dict[str, Any]) -> str:
     return friendly_format_map.get(preferred_format, preferred_format)
 
 
-def _prepare_download_options(info: Dict[str, Any], choice: str) -> Dict[str, Any]:
+def _prepare_download_options(info: Dict[str, Any], choice: str, url: str) -> Dict[str, Any]:
     """Prepare yt-dlp download options based on format choice."""
     title = info.get("title", "Unknown")
-    filename_base = get_unique_filename(os.path.join(download_directory, title))
+    
+    # Get organized download path
+    organized_path = get_organized_download_path(url, info)
+    filename_base = get_unique_filename(os.path.join(organized_path, title))
 
     if choice == "mp3":
         return {
             "format": "bestaudio/best",
-            "outtmpl": os.path.join(download_directory, f"{title}.%(ext)s"),
+            "outtmpl": os.path.join(organized_path, f"{title}.%(ext)s"),
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -705,7 +831,12 @@ def download_instagram_post(url: str) -> None:
             return
 
         post = instaloader.Post.from_shortcode(loader.context, shortcode)
-        loader.download_post(post, target=download_directory)
+        
+        # Get organized download path using Instagram username
+        uploader = post.owner_username
+        organized_path = get_organized_download_path(url, uploader_override=uploader)
+        
+        loader.download_post(post, target=organized_path)
 
         log_download(url, "Success")
         print(f"\n\033[1;32mDownloaded Instagram post successfully:\033[0m {url}")
@@ -763,8 +894,12 @@ def extract_instagram_video_mp3(url: str) -> None:
 
             ensure_ffmpeg()
 
+            # Get organized download path using Instagram username
+            uploader = post.owner_username
+            organized_path = get_organized_download_path(url, uploader_override=uploader)
+            
             # Convert to MP3
-            mp3_path = os.path.join(download_directory, f"instagram_{shortcode}.mp3")
+            mp3_path = os.path.join(organized_path, f"instagram_{shortcode}.mp3")
             _convert_video_to_mp3(video_path, mp3_path)
 
             print(f"\n\033[1;32mDownloaded and converted successfully:\033[0m {url}")

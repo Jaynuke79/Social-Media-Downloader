@@ -21,6 +21,9 @@ from .downloader import (
     is_valid_platform_url,
     get_unique_filename,
     log_download,
+    detect_platform_from_url,
+    sanitize_filename,
+    get_organized_download_path,
     cli,
 )
 
@@ -41,5 +44,8 @@ __all__ = [
     "is_valid_platform_url",
     "get_unique_filename",
     "log_download",
+    "detect_platform_from_url",
+    "sanitize_filename",
+    "get_organized_download_path",
     "cli",
 ]
