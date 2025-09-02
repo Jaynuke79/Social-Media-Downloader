@@ -11,7 +11,7 @@ Have a subdirectory system within the default download location that organizes t
 
 An example being organizing by platform: If downloading from instagram, download the files in `<Default Download Location> -> Instagram -> <Author> -> <Download Files>` 
 
-### 2) Downloading Additional Media Info [Implemented - Partial]
+### 2) Downloading Additional Media Info [Implemented - Partial ([3b99fd0](https://github.com/Jaynuke79/Social-Media-Downloader/commit/3b99fd0db6d68a3cb0ad039076016028f2affe1f))]
 
 Along with downloading the media, download comments, descriptions, and other additional info from the media in question. 
 
