@@ -3,5 +3,9 @@
     "download_directory": "media",
     "history_file": "download_history.csv",
     "mp3_quality": "192",
-    "organize_downloads": true
+    "organize_downloads": true,
+    "download_metadata": true,
+    "download_comments": true,
+    "download_subtitles": false,
+    "max_comments": 50
 }

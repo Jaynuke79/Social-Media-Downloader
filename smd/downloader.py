@@ -53,6 +53,10 @@ DEFAULT_CONFIG = {
     "history_file": "download_history.csv",
     "mp3_quality": "192",
     "organize_downloads": True,
+    "download_metadata": True,
+    "download_comments": False,
+    "download_subtitles": False,
+    "max_comments": 200,
 }
 
 VALID_DEFAULT_FORMATS = {
@@ -268,6 +272,48 @@ def _validate_config(config_data: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]
         config_data["organize_downloads"] = False
         config_changed = True
 
+    # Validate download_metadata
+    download_metadata = config_data.get("download_metadata", True)
+    if not isinstance(download_metadata, bool):
+        logging.warning(
+            f"Invalid download_metadata '{download_metadata}', resetting to True."
+        )
+        config_data["download_metadata"] = True
+        config_changed = True
+
+    # Validate download_comments
+    download_comments = config_data.get("download_comments", False)
+    if not isinstance(download_comments, bool):
+        logging.warning(
+            f"Invalid download_comments '{download_comments}', resetting to False."
+        )
+        config_data["download_comments"] = False
+        config_changed = True
+
+    # Validate download_subtitles
+    download_subtitles = config_data.get("download_subtitles", False)
+    if not isinstance(download_subtitles, bool):
+        logging.warning(
+            f"Invalid download_subtitles '{download_subtitles}', resetting to False."
+        )
+        config_data["download_subtitles"] = False
+        config_changed = True
+
+    # Validate max_comments
+    max_comments = config_data.get("max_comments", 200)
+    try:
+        max_comments = int(max_comments)
+        if max_comments < 1 or max_comments > 10000:
+            raise ValueError("out of range")
+    except (ValueError, TypeError):
+        logging.warning(
+            f"Invalid max_comments '{config_data.get('max_comments')}', resetting to 200."
+        )
+        config_data["max_comments"] = 200
+        config_changed = True
+    else:
+        config_data["max_comments"] = max_comments
+
     return config_data, config_changed
 
 
@@ -452,6 +498,148 @@ def log_download(url: str, status: str) -> None:
         logging.info(f"Download status for {url}: {status}")
     except IOError as e:
         logging.error(f"Failed to log download: {e}")
+
+
+# ---------------------------------
+# Metadata and Comment Processing
+# ---------------------------------
+
+
+def convert_comments_to_csv(comments_json_path: str, output_csv_path: str) -> bool:
+    """
+    Convert yt-dlp JSON comments to CSV format.
+    
+    Args:
+        comments_json_path: Path to JSON comments file
+        output_csv_path: Path to output CSV file
+        
+    Returns:
+        bool: True if conversion successful, False otherwise
+    """
+    try:
+        import json
+        import csv
+        from datetime import datetime
+        
+        with open(comments_json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        comments = data.get('comments', [])
+        if not comments:
+            return False
+            
+        with open(output_csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Author', 'Text', 'Timestamp', 'Likes', 'Replies', 'Comment_ID'])
+            
+            for comment in comments:
+                # Convert timestamp to readable format
+                timestamp = comment.get('timestamp', '')
+                if timestamp:
+                    try:
+                        dt = datetime.fromtimestamp(timestamp)
+                        timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except (ValueError, OSError):
+                        pass
+                
+                writer.writerow([
+                    comment.get('author', ''),
+                    comment.get('text', '').replace('\n', ' '),
+                    timestamp,
+                    comment.get('like_count', 0),
+                    comment.get('reply_count', 0),
+                    comment.get('id', '')
+                ])
+        
+        return True
+    except Exception as e:
+        logging.error(f"Failed to convert comments to CSV: {e}")
+        return False
+
+
+def extract_clean_description(info_json_path: str, output_txt_path: str) -> bool:
+    """
+    Extract clean description from metadata JSON file.
+    
+    Args:
+        info_json_path: Path to info.json file
+        output_txt_path: Path to output description.txt file
+        
+    Returns:
+        bool: True if extraction successful, False otherwise
+    """
+    try:
+        import json
+        
+        with open(info_json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        description = data.get('description', '').strip()
+        if not description:
+            return False
+            
+        with open(output_txt_path, 'w', encoding='utf-8') as f:
+            f.write(description)
+        
+        return True
+    except Exception as e:
+        logging.error(f"Failed to extract description: {e}")
+        return False
+
+
+def should_download_metadata() -> bool:
+    """Check if metadata downloads are enabled in config."""
+    return config.get("download_metadata", True)
+
+
+def should_download_comments() -> bool:
+    """Check if comment downloads are enabled in config."""
+    return config.get("download_comments", False)
+
+
+def should_download_subtitles() -> bool:
+    """Check if subtitle downloads are enabled in config."""
+    return config.get("download_subtitles", False)
+
+
+def get_max_comments() -> int:
+    """Get maximum number of comments to download."""
+    return config.get("max_comments", 200)
+
+
+def _process_downloaded_metadata(url: str, info: Dict[str, Any]) -> None:
+    """
+    Process downloaded metadata files (convert comments to CSV, extract descriptions).
+    
+    Args:
+        url: Video URL
+        info: Video metadata from yt-dlp
+    """
+    try:
+        organized_path = get_organized_download_path(url, info)
+        
+        # Find the actual info.json file (yt-dlp may use different filename sanitization)
+        info_json_path = None
+        for filename in os.listdir(organized_path):
+            if filename.endswith('.info.json'):
+                info_json_path = os.path.join(organized_path, filename)
+                break
+        
+        if info_json_path and os.path.exists(info_json_path):
+            # Get the base name without .info.json extension for other files
+            base_name = os.path.basename(info_json_path)[:-10]  # Remove '.info.json'
+            
+            # Extract clean description
+            description_path = os.path.join(organized_path, f"{base_name}.description.txt")
+            extract_clean_description(info_json_path, description_path)
+            
+            # Convert comments to CSV if comments were downloaded
+            if should_download_comments():
+                csv_path = os.path.join(organized_path, f"{base_name}.comments.csv")
+                convert_comments_to_csv(info_json_path, csv_path)
+                
+    except Exception as e:
+        logging.warning(f"Failed to process metadata files for {url}: {e}")
 
 
 def get_unique_filename(filename: str) -> str:
@@ -706,10 +894,14 @@ def download_youtube_or_tiktok_video(url: str) -> None:
         # Perform download
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-            log_download(url, "Success")
-            print(
-                f"\n\033[1;32mDownloaded successfully:\033[0m {info.get('title', 'Unknown')}"
-            )
+            
+        # Post-process metadata files
+        _process_downloaded_metadata(url, info)
+        
+        log_download(url, "Success")
+        print(
+            f"\n\033[1;32mDownloaded successfully:\033[0m {info.get('title', 'Unknown')}"
+        )
 
     except Exception as e:
         log_download(url, f"Failed: {str(e)}")
@@ -773,8 +965,33 @@ def _prepare_download_options(info: Dict[str, Any], choice: str, url: str) -> Di
     organized_path = get_organized_download_path(url, info)
     filename_base = get_unique_filename(os.path.join(organized_path, title))
 
+    # Base options for all downloads
+    base_options = {
+        "noplaylist": True,
+    }
+    
+    # Add metadata options if enabled
+    if should_download_metadata():
+        base_options["writeinfojson"] = True
+        
+    # Add comment options if enabled
+    if should_download_comments():
+        base_options["writecomments"] = True
+        base_options["getcomments"] = True
+        # Comment limits are handled at the extractor level
+        max_comments = str(get_max_comments())
+        base_options["extractor_args"] = {
+            "youtube": {"max_comments": [max_comments], "comment_sort": ["top"]},
+            "tiktok": {"max_comments": [max_comments]},
+        }
+        
+    # Add subtitle options if enabled
+    if should_download_subtitles():
+        base_options["writesubtitles"] = True
+        base_options["writeautomaticsub"] = True
+
     if choice == "mp3":
-        return {
+        mp3_options = {
             "format": "bestaudio/best",
             "outtmpl": os.path.join(organized_path, f"{title}.%(ext)s"),
             "postprocessors": [
@@ -785,6 +1002,8 @@ def _prepare_download_options(info: Dict[str, Any], choice: str, url: str) -> Di
                 }
             ],
         }
+        mp3_options.update(base_options)
+        return mp3_options
     else:
         # Handle video-only formats by auto-merging with audio
         selected_fmt = next(
@@ -797,12 +1016,13 @@ def _prepare_download_options(info: Dict[str, Any], choice: str, url: str) -> Di
             print(f"\033[1;32mAuto-fix:\033[0m Merging with best available audio.")
             choice = f"{choice}+bestaudio"
 
-        return {
+        video_options = {
             "format": choice,
             "outtmpl": f"{filename_base}.%(ext)s",
             "merge_output_format": "mp4",
-            "noplaylist": True,
         }
+        video_options.update(base_options)
+        return video_options
 
 
 # ---------------------------------
@@ -838,10 +1058,14 @@ def download_instagram_post(url: str) -> None:
         uploader = post.owner_username
         organized_path = get_organized_download_path(url, uploader_override=uploader)
         
-        # Create loader with organized path as dirname_pattern
+        # Create loader with organized path and metadata options
         loader = instaloader.Instaloader(
             dirname_pattern=organized_path,
-            filename_pattern="{date_utc}_UTC"
+            filename_pattern="{date_utc}_UTC",
+            save_metadata=should_download_metadata(),
+            download_comments=should_download_comments(),
+            download_geotags=True,
+            max_connection_attempts=3
         )
         
         loader.download_post(post, target="")
@@ -880,7 +1104,10 @@ def extract_instagram_video_mp3(url: str) -> None:
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             loader = instaloader.Instaloader(
-                dirname_pattern=temp_dir, save_metadata=False, download_comments=False
+                dirname_pattern=temp_dir, 
+                save_metadata=should_download_metadata(), 
+                download_comments=should_download_comments(),
+                download_geotags=True
             )
 
             post = instaloader.Post.from_shortcode(loader.context, shortcode)
