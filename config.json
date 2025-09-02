@@ -7,5 +7,10 @@
     "download_metadata": true,
     "download_comments": true,
     "download_subtitles": false,
-    "max_comments": 50
+    "max_comments": 50,
+    "authentication": {
+        "use_browser_cookies": true,
+        "cookie_browser": "firefox",
+        "session_directory": ".smd_sessions"
+    }
 }

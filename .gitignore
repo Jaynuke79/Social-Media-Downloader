@@ -27,3 +27,6 @@ site/
 
 media
 download_history.csv
+.smd_sessions/
+.smd_credentials.json
+.smd_key

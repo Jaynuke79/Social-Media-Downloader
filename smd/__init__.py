@@ -24,6 +24,14 @@ from .downloader import (
     detect_platform_from_url,
     sanitize_filename,
     get_organized_download_path,
+    setup_instagram_login,
+    is_instagram_authenticated,
+    download_instagram_saved_posts,
+    download_instagram_saved_posts_browser,
+    download_instagram_liked_posts,
+    download_youtube_liked_videos,
+    download_youtube_watch_later,
+    download_youtube_subscriptions_feed,
     cli,
 )
 
@@ -47,5 +55,13 @@ __all__ = [
     "detect_platform_from_url",
     "sanitize_filename",
     "get_organized_download_path",
+    "setup_instagram_login",
+    "is_instagram_authenticated",
+    "download_instagram_saved_posts",
+    "download_instagram_saved_posts_browser",
+    "download_instagram_liked_posts",
+    "download_youtube_liked_videos",
+    "download_youtube_watch_later",
+    "download_youtube_subscriptions_feed",
     "cli",
 ]

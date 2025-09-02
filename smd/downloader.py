@@ -20,9 +20,27 @@ import shutil
 import logging
 import tempfile
 import subprocess
+import getpass
+import base64
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple, Any
+from cryptography.fernet import Fernet
+from pathlib import Path
+
+# Browser automation imports
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.options import Options as ChromeOptions
+    from selenium.webdriver.firefox.options import Options as FirefoxOptions
+    from webdriver_manager.chrome import ChromeDriverManager
+    from webdriver_manager.firefox import GeckoDriverManager
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
 
 # Third-party imports
 import yt_dlp
@@ -57,6 +75,12 @@ DEFAULT_CONFIG = {
     "download_comments": False,
     "download_subtitles": False,
     "max_comments": 200,
+    "authentication": {
+        "instagram_username": "",
+        "use_browser_cookies": True,
+        "cookie_browser": "chrome",
+        "session_directory": ".smd_sessions"
+    }
 }
 
 VALID_DEFAULT_FORMATS = {
@@ -478,6 +502,362 @@ def _display_development_version() -> None:
         f"\n\033[1;33mYou're running a newer version than what's published on PyPI.\033[0m"
     )
     print(f"\033[1;36mThis might be a development or beta version.\033[0m")
+
+
+# ---------------------------------
+# Authentication and Session Management
+# ---------------------------------
+def _get_encryption_key() -> bytes:
+    """Get or create encryption key for credential storage."""
+    key_file = Path(".smd_key")
+    if key_file.exists():
+        return key_file.read_bytes()
+    else:
+        key = Fernet.generate_key()
+        key_file.write_bytes(key)
+        os.chmod(key_file, 0o600)  # Readable only by owner
+        return key
+
+
+def _encrypt_credential(credential: str) -> str:
+    """Encrypt a credential using Fernet encryption."""
+    key = _get_encryption_key()
+    f = Fernet(key)
+    encrypted = f.encrypt(credential.encode())
+    return base64.urlsafe_b64encode(encrypted).decode()
+
+
+def _decrypt_credential(encrypted_credential: str) -> str:
+    """Decrypt a credential using Fernet encryption."""
+    try:
+        key = _get_encryption_key()
+        f = Fernet(key)
+        encrypted_bytes = base64.urlsafe_b64decode(encrypted_credential.encode())
+        return f.decrypt(encrypted_bytes).decode()
+    except Exception:
+        return ""
+
+
+def setup_instagram_login() -> bool:
+    """Set up Instagram authentication credentials."""
+    print(colored("\n=== Instagram Authentication Setup ===", "cyan", attrs=["bold"]))
+    print("This will allow you to download private content and access saved/liked posts.")
+    print(colored("⚠️  Your credentials will be encrypted and stored locally.", "yellow"))
+    
+    print(colored("💡 Your Instagram username is what appears after '@' in your profile URL.", "cyan"))
+    print(colored("   Example: If your profile is instagram.com/johndoe, enter 'johndoe'", "cyan"))
+    
+    username = input("\nEnter your Instagram username: ").strip()
+    if not username:
+        print(colored("❌ Username cannot be empty.", "red"))
+        return False
+    
+    # Remove @ if user included it
+    if username.startswith('@'):
+        username = username[1:]
+        print(colored(f"✓ Using username: {username}", "green"))
+    
+    # Validate username format (basic check)
+    if username.isdigit():
+        print(colored("⚠️  Warning: Instagram usernames are usually text, not just numbers.", "yellow"))
+        confirm = input("Are you sure this is your Instagram username? (y/n): ")
+        if not confirm.lower().startswith('y'):
+            return False
+    
+    password = getpass.getpass("Enter your Instagram password: ")
+    if not password:
+        print(colored("❌ Password cannot be empty.", "red"))
+        return False
+    
+    # Update config with encrypted credentials
+    config = load_config()
+    config["authentication"]["instagram_username"] = username
+    
+    # Store encrypted password in a separate credentials file
+    credentials_file = Path(".smd_credentials.json")
+    credentials = {}
+    if credentials_file.exists():
+        try:
+            credentials = json.loads(credentials_file.read_text())
+        except Exception:
+            credentials = {}
+    
+    credentials["instagram_password"] = _encrypt_credential(password)
+    credentials_file.write_text(json.dumps(credentials, indent=2))
+    os.chmod(credentials_file, 0o600)  # Readable only by owner
+    
+    _save_config(config)
+    print(colored("✅ Instagram credentials saved successfully!", "green"))
+    return True
+
+
+def get_instagram_credentials() -> Tuple[str, str]:
+    """Get Instagram credentials from config and credential file."""
+    config = load_config()
+    username = config.get("authentication", {}).get("instagram_username", "")
+    
+    credentials_file = Path(".smd_credentials.json")
+    if not credentials_file.exists() or not username:
+        return "", ""
+    
+    try:
+        credentials = json.loads(credentials_file.read_text())
+        encrypted_password = credentials.get("instagram_password", "")
+        password = _decrypt_credential(encrypted_password)
+        return username, password
+    except Exception:
+        return "", ""
+
+
+def get_session_directory() -> Path:
+    """Get the session directory path, creating it if necessary."""
+    config = load_config()
+    session_dir = Path(config.get("authentication", {}).get("session_directory", ".smd_sessions"))
+    session_dir.mkdir(exist_ok=True)
+    os.chmod(session_dir, 0o700)  # Accessible only by owner
+    return session_dir
+
+
+def is_instagram_authenticated() -> bool:
+    """Check if Instagram authentication is set up."""
+    username, password = get_instagram_credentials()
+    return bool(username and password)
+
+
+def create_authenticated_instaloader(session_filename: Optional[str] = None) -> instaloader.Instaloader:
+    """Create an authenticated Instaloader instance."""
+    session_dir = get_session_directory()
+    
+    if session_filename:
+        loader = instaloader.Instaloader(dirname_pattern=str(session_dir))
+        try:
+            loader.load_session_from_file(get_instagram_credentials()[0], str(session_dir / session_filename))
+            return loader
+        except Exception:
+            pass
+    
+    # Create new authenticated session
+    loader = instaloader.Instaloader(dirname_pattern=str(session_dir))
+    username, password = get_instagram_credentials()
+    
+    if username and password:
+        try:
+            loader.login(username, password)
+            # Save session for future use
+            session_file = session_dir / f"session-{username}"
+            loader.save_session_to_file(str(session_file))
+            print(colored(f"✅ Instagram login successful! Session saved.", "green"))
+            return loader
+        except Exception as e:
+            error_msg = str(e).lower()
+            print(colored(f"❌ Instagram login failed: {e}", "red"))
+            if "incorrect username" in error_msg or "user does not exist" in error_msg:
+                print(colored("   → Check if your Instagram username is correct.", "yellow"))
+            elif "incorrect password" in error_msg or "password" in error_msg:
+                print(colored("   → Check if your Instagram password is correct.", "yellow"))
+            elif "challenge" in error_msg or "checkpoint" in error_msg:
+                print(colored("   → Instagram requires additional verification.", "yellow"))
+                print(colored("   → Try logging into Instagram on a web browser first.", "yellow"))
+            elif "rate" in error_msg or "many" in error_msg:
+                print(colored("   → Too many login attempts. Wait and try again later.", "yellow"))
+            else:
+                print(colored("   → Go to 'Authentication Setup' → 'Instagram Login Setup' to reconfigure.", "yellow"))
+    
+    return loader
+
+
+def get_browser_cookies_path() -> str:
+    """Get the browser to use for cookie extraction."""
+    config = load_config()
+    return config.get("authentication", {}).get("cookie_browser", "chrome")
+
+
+def _setup_instagram_browser():
+    """Setup browser for Instagram automation."""
+    try:
+        config = load_config()
+        browser = config.get("authentication", {}).get("cookie_browser", "chrome")
+        
+        if browser.lower() == "firefox":
+            options = FirefoxOptions()
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            # Don't run headless for Instagram - they detect it
+            driver = webdriver.Firefox(
+                service=webdriver.firefox.service.Service(GeckoDriverManager().install()),
+                options=options
+            )
+        else:
+            options = ChromeOptions()
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
+            # Don't run headless for Instagram - they detect it
+            driver = webdriver.Chrome(
+                service=webdriver.chrome.service.Service(ChromeDriverManager().install()),
+                options=options
+            )
+            
+        # Make it look more like a real browser
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        return driver
+        
+    except Exception as e:
+        print(colored(f"❌ Failed to setup browser: {e}", "red"))
+        print(colored("Make sure Chrome or Firefox is installed.", "yellow"))
+        return None
+
+
+def _get_instagram_username_from_browser(driver) -> Optional[str]:
+    """Extract Instagram username from the browser."""
+    try:
+        # Method 1: Try to get username from URL if on profile page
+        current_url = driver.current_url
+        if "/profilePage/" in current_url or current_url.count('/') >= 4:
+            parts = current_url.split('/')
+            for part in parts:
+                if part and part != "www.instagram.com" and part != "https:" and part != "":
+                    return part
+        
+        # Method 2: Click on profile icon and get username
+        try:
+            # Look for profile link or username in various places
+            profile_selectors = [
+                "a[href*='/'][aria-label*='profile' i]",
+                "a[href^='/'][role='link'] img[alt*='profile' i]",
+                "a[href^='/'] img[data-testid='user-avatar']",
+                "a[aria-label*='Profile']",
+            ]
+            
+            for selector in profile_selectors:
+                try:
+                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    for element in elements:
+                        href = element.get_attribute('href')
+                        if href and '/' in href:
+                            username = href.split('/')[-2] if href.endswith('/') else href.split('/')[-1]
+                            if username and username != "www.instagram.com" and len(username) > 0:
+                                return username
+                except:
+                    continue
+                    
+            # Method 3: Try to navigate to profile
+            try:
+                driver.get("https://www.instagram.com/accounts/edit/")
+                time.sleep(2)
+                current_url = driver.current_url
+                if "accounts/edit" in current_url:
+                    # Look for username in the edit profile page
+                    username_inputs = driver.find_elements(By.CSS_SELECTOR, "input[name='username'], input[id*='username' i]")
+                    for input_elem in username_inputs:
+                        username = input_elem.get_attribute('value')
+                        if username:
+                            return username
+            except:
+                pass
+                
+        except Exception:
+            pass
+        
+        return None
+        
+    except Exception as e:
+        print(colored(f"⚠️  Warning: Could not detect username: {e}", "yellow"))
+        return None
+
+
+def _extract_instagram_post_links(driver, max_count: int) -> List[str]:
+    """Extract Instagram post links from the current page."""
+    post_links = []
+    
+    try:
+        # Scroll and collect post links
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        
+        while len(post_links) < max_count:
+            # Find post links
+            posts = driver.find_elements(By.CSS_SELECTOR, "a[href*='/p/']")
+            
+            for post in posts:
+                href = post.get_attribute('href')
+                if href and '/p/' in href and href not in post_links:
+                    post_links.append(href)
+                    if len(post_links) >= max_count:
+                        break
+            
+            if len(post_links) >= max_count:
+                break
+                
+            # Scroll down
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)  # Wait for loading
+            
+            # Check if more content loaded
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                break  # No more content
+            last_height = new_height
+            
+    except Exception as e:
+        print(colored(f"⚠️  Warning extracting posts: {e}", "yellow"))
+    
+    return post_links[:max_count]
+
+
+def _download_instagram_posts_with_ytdlp(post_links: List[str]) -> None:
+    """Download Instagram posts using yt-dlp."""
+    success_count = 0
+    
+    for i, url in enumerate(post_links, 1):
+        try:
+            print(colored(f"📥 Downloading post {i}/{len(post_links)}: {url}", "cyan"))
+            
+            # First extract metadata to get proper uploader information
+            temp_ydl_opts = {'quiet': True}
+            with yt_dlp.YoutubeDL(temp_ydl_opts) as temp_ydl:
+                info = temp_ydl.extract_info(url, download=False)
+            
+            # Get organized path using the extracted metadata
+            organized_path = get_organized_download_path(url, info)
+            
+            ydl_opts = {
+                'outtmpl': f'{organized_path}/%(title)s.%(ext)s',
+            }
+            
+            # Add metadata options if enabled
+            if should_download_metadata():
+                ydl_opts.update({
+                    'writeinfojson': True,
+                    'writedescription': True,
+                })
+            
+            if should_download_comments():
+                ydl_opts['writecomments'] = True
+                
+            if should_download_subtitles():
+                ydl_opts.update({
+                    'writesubtitles': True,
+                    'writeautomaticsub': True,
+                })
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                
+            print(colored(f"✅ Downloaded post {i}/{len(post_links)}", "green"))
+            log_download(url, "Success")
+            success_count += 1
+            
+            # Small delay between downloads
+            time.sleep(1)
+            
+        except Exception as e:
+            print(colored(f"❌ Failed to download post {i}: {e}", "red"))
+            log_download(url, "Failed")
+    
+    print(colored(f"\n🎉 Downloaded {success_count}/{len(post_links)} posts successfully!", "green"))
 
 
 # ---------------------------------
@@ -1233,6 +1613,303 @@ def batch_download_from_file(file_path: str) -> None:
 
 
 # ---------------------------------
+# Authenticated Content Access
+# ---------------------------------
+def download_instagram_saved_posts(max_count: int = 50) -> None:
+    """Download user's saved Instagram posts."""
+    if not is_instagram_authenticated():
+        print(colored("❌ Instagram authentication required.", "red"))
+        print(colored("Run the tool and select 'Instagram Authentication Setup' first.", "yellow"))
+        return
+    
+    try:
+        print(colored(f"\n📥 Downloading your {max_count} most recent saved posts...", "cyan"))
+        
+        loader = create_authenticated_instaloader()
+        username = get_instagram_credentials()[0]
+        
+        # Configure loader for organized downloads
+        config = load_config()
+        if config.get("organize_downloads", True):
+            base_path = config.get("download_directory", "media")
+            organized_path = f"{base_path}/Instagram/{username}/Saved"
+            loader.dirname_pattern = organized_path
+        
+        # Get user profile and saved posts
+        try:
+            profile = instaloader.Profile.from_username(loader.context, username)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "404" in error_msg or "not found" in error_msg:
+                print(colored(f"❌ Instagram user '{username}' not found.", "red"))
+                print(colored("   → Check if the username is correct.", "yellow"))
+                print(colored("   → Make sure it's your Instagram username, not display name.", "yellow"))
+            elif "401" in error_msg or "unauthorized" in error_msg:
+                print(colored("❌ Access denied by Instagram.", "red"))
+                print(colored("   → Instagram may have detected automated access.", "yellow"))
+                print(colored("   → Try logging into Instagram in your browser first.", "yellow"))
+                print(colored("   → Wait a few hours before trying again.", "yellow"))
+            else:
+                print(colored(f"❌ Failed to get Instagram profile: {e}", "red"))
+            return
+            
+        saved_posts = profile.get_saved_posts()
+        
+        count = 0
+        for post in saved_posts:
+            if count >= max_count:
+                break
+            
+            try:
+                loader.download_post(post, target=f"{username}_saved")
+                print(colored(f"✅ Downloaded saved post {count + 1}/{max_count}", "green"))
+                log_download(f"https://instagram.com/p/{post.shortcode}/", "Success")
+                count += 1
+            except Exception as e:
+                print(colored(f"❌ Failed to download saved post: {e}", "red"))
+                log_download(f"https://instagram.com/p/{post.shortcode}/", "Failed")
+        
+        print(colored(f"\n✅ Downloaded {count} saved posts!", "green"))
+        
+    except Exception as e:
+        print(colored(f"❌ Error downloading saved posts: {e}", "red"))
+
+
+def download_instagram_saved_posts_browser(max_count: int = 50) -> None:
+    """Download Instagram saved posts using browser automation."""
+    if not SELENIUM_AVAILABLE:
+        print(colored("❌ Browser automation not available.", "red"))
+        print(colored("Install selenium: pip install selenium webdriver-manager", "yellow"))
+        return
+        
+    try:
+        print(colored(f"\n🌐 Starting browser automation for Instagram saved posts...", "cyan"))
+        print(colored("This will open a browser window - please don't close it manually.", "yellow"))
+        
+        # Setup browser
+        driver = _setup_instagram_browser()
+        if not driver:
+            return
+            
+        try:
+            # Navigate to Instagram and handle login
+            print(colored("📱 Navigating to Instagram...", "cyan"))
+            driver.get("https://www.instagram.com")
+            
+            # Wait for user to log in manually
+            print(colored("\n🔐 Please log into Instagram in the browser window.", "yellow"))
+            print(colored("After logging in, press Enter here to continue...", "yellow"))
+            input()
+            
+            # Get username from current URL or profile
+            print(colored("🔍 Getting your Instagram username...", "cyan"))
+            username = _get_instagram_username_from_browser(driver)
+            if not username:
+                print(colored("❌ Could not auto-detect your Instagram username.", "yellow"))
+                username = input("Please enter your Instagram username: ").strip()
+                if not username:
+                    print(colored("❌ Username is required.", "red"))
+                    return
+                # Remove @ if provided
+                if username.startswith('@'):
+                    username = username[1:]
+                
+            print(colored(f"✅ Detected username: {username}", "green"))
+            
+            # Navigate to saved posts
+            print(colored("📥 Navigating to saved posts...", "cyan"))
+            saved_url = f"https://www.instagram.com/{username}/saved/all-posts/"
+            driver.get(saved_url)
+            
+            # Wait for saved posts to load
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "article"))
+            )
+            
+            # Get saved post links
+            post_links = _extract_instagram_post_links(driver, max_count)
+            
+            if not post_links:
+                print(colored("❌ No saved posts found.", "red"))
+                return
+                
+            print(colored(f"✅ Found {len(post_links)} saved posts to download.", "green"))
+            
+            # Download each post using yt-dlp
+            _download_instagram_posts_with_ytdlp(post_links)
+            
+        finally:
+            driver.quit()
+            
+    except Exception as e:
+        print(colored(f"❌ Browser automation failed: {e}", "red"))
+        print(colored("You can try the API method if this doesn't work.", "yellow"))
+
+
+def download_instagram_liked_posts(max_count: int = 50) -> None:
+    """Download user's liked Instagram posts."""
+    print(colored("⚠️  Note: Instagram doesn't provide direct access to liked posts via API.", "yellow"))
+    print(colored("This feature would require extensive browser automation.", "yellow"))
+    print(colored("Consider using the saved posts feature instead, or manually save posts you want to download.", "cyan"))
+
+
+def download_youtube_liked_videos(max_count: int = 50) -> None:
+    """Download YouTube liked videos using browser cookies."""
+    try:
+        print(colored(f"\n❤️  Downloading your {max_count} most recent liked YouTube videos...", "cyan"))
+        
+        config = load_config()
+        browser = get_browser_cookies_path()
+        
+        # Configure organized downloads
+        if config.get("organize_downloads", True):
+            base_path = config.get("download_directory", "media")
+            organized_path = f"{base_path}/YouTube/Liked"
+            os.makedirs(organized_path, exist_ok=True)
+        else:
+            organized_path = config.get("download_directory", "media")
+        
+        ydl_opts = {
+            'cookiefile': None,
+            'cookiesfrombrowser': (browser,),
+            'outtmpl': f'{organized_path}/%(title)s.%(ext)s',
+            'extract_flat': False,
+            'playlistend': max_count,
+        }
+        
+        # Add metadata options if enabled
+        if should_download_metadata():
+            ydl_opts.update({
+                'writeinfojson': True,
+                'writedescription': True,
+            })
+        
+        if should_download_comments():
+            ydl_opts['writecomments'] = True
+        
+        if should_download_subtitles():
+            ydl_opts.update({
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+            })
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Use the special YouTube liked videos URL
+            liked_videos_url = "https://www.youtube.com/playlist?list=LL"
+            ydl.download([liked_videos_url])
+        
+        print(colored(f"✅ Liked videos download completed!", "green"))
+        
+    except Exception as e:
+        print(colored(f"❌ Error downloading liked videos: {e}", "red"))
+        print(colored("Make sure you're logged into YouTube in your browser.", "yellow"))
+
+
+def download_youtube_watch_later(max_count: int = 50) -> None:
+    """Download YouTube Watch Later playlist using browser cookies."""
+    try:
+        print(colored(f"\n⏰ Downloading your {max_count} most recent Watch Later videos...", "cyan"))
+        
+        config = load_config()
+        browser = get_browser_cookies_path()
+        
+        # Configure organized downloads
+        if config.get("organize_downloads", True):
+            base_path = config.get("download_directory", "media")
+            organized_path = f"{base_path}/YouTube/WatchLater"
+            os.makedirs(organized_path, exist_ok=True)
+        else:
+            organized_path = config.get("download_directory", "media")
+        
+        ydl_opts = {
+            'cookiefile': None,
+            'cookiesfrombrowser': (browser,),
+            'outtmpl': f'{organized_path}/%(title)s.%(ext)s',
+            'extract_flat': False,
+            'playlistend': max_count,
+        }
+        
+        # Add metadata options if enabled
+        if should_download_metadata():
+            ydl_opts.update({
+                'writeinfojson': True,
+                'writedescription': True,
+            })
+        
+        if should_download_comments():
+            ydl_opts['writecomments'] = True
+        
+        if should_download_subtitles():
+            ydl_opts.update({
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+            })
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Use the special YouTube Watch Later URL
+            watch_later_url = "https://www.youtube.com/playlist?list=WL"
+            ydl.download([watch_later_url])
+        
+        print(colored(f"✅ Watch Later download completed!", "green"))
+        
+    except Exception as e:
+        print(colored(f"❌ Error downloading Watch Later: {e}", "red"))
+        print(colored("Make sure you're logged into YouTube in your browser.", "yellow"))
+
+
+def download_youtube_subscriptions_feed(max_count: int = 50) -> None:
+    """Download recent videos from YouTube subscriptions."""
+    try:
+        print(colored(f"\n📺 Downloading {max_count} recent videos from your subscriptions...", "cyan"))
+        
+        config = load_config()
+        browser = get_browser_cookies_path()
+        
+        # Configure organized downloads
+        if config.get("organize_downloads", True):
+            base_path = config.get("download_directory", "media")
+            organized_path = f"{base_path}/YouTube/Subscriptions"
+            os.makedirs(organized_path, exist_ok=True)
+        else:
+            organized_path = config.get("download_directory", "media")
+        
+        ydl_opts = {
+            'cookiefile': None,
+            'cookiesfrombrowser': (browser,),
+            'outtmpl': f'{organized_path}/%(uploader)s - %(title)s.%(ext)s',
+            'extract_flat': False,
+            'playlistend': max_count,
+        }
+        
+        # Add metadata options if enabled
+        if should_download_metadata():
+            ydl_opts.update({
+                'writeinfojson': True,
+                'writedescription': True,
+            })
+        
+        if should_download_comments():
+            ydl_opts['writecomments'] = True
+        
+        if should_download_subtitles():
+            ydl_opts.update({
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+            })
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Use the special YouTube subscriptions feed URL
+            subscriptions_url = ":ytsubs"
+            ydl.download([subscriptions_url])
+        
+        print(colored(f"✅ Subscriptions feed download completed!", "green"))
+        
+    except Exception as e:
+        print(colored(f"❌ Error downloading subscriptions feed: {e}", "red"))
+        print(colored("Make sure you're logged into YouTube in your browser.", "yellow"))
+
+
+# ---------------------------------
 # Help and Menu Functions
 # ---------------------------------
 def show_help() -> None:
@@ -1319,6 +1996,175 @@ def instagram_menu() -> None:
         print("\033[1;31mInvalid choice.\033[0m")
 
 
+def authentication_setup_menu() -> None:
+    """Display authentication setup options."""
+    print("\n\033[1;36m⚙️  Authentication Setup\033[0m")
+    print("─" * 40)
+    
+    options = [
+        "1. 📸 Instagram Login Setup",
+        "2. 🌐 Configure Browser for Cookies (YouTube/TikTok)",
+        "3. 📊 View Authentication Status",
+        "4. 🔙 Back to Main Menu",
+    ]
+
+    for option in options:
+        print(option)
+
+    choice = input("\nEnter your choice: ").strip()
+
+    if choice == "1":
+        setup_instagram_login()
+    elif choice == "2":
+        configure_browser_cookies()
+    elif choice == "3":
+        show_authentication_status()
+    elif choice == "4":
+        return
+    else:
+        print("\033[1;31mInvalid choice.\033[0m")
+
+
+def authenticated_downloads_menu() -> None:
+    """Display authenticated download options."""
+    print("\n\033[1;36m🔐 Authenticated Downloads\033[0m")
+    print("─" * 40)
+    
+    # Check authentication status
+    instagram_auth = is_instagram_authenticated()
+    if instagram_auth:
+        username = get_instagram_credentials()[0]
+        instagram_status = f"✅ ({username})"
+    else:
+        instagram_status = "❌ Not configured"
+    
+    print(f"Instagram Authentication: {instagram_status}")
+    print(f"Browser Cookies: ✅ (Auto-detected from {get_browser_cookies_path()})")
+    print("")
+    
+    if not instagram_auth:
+        print(colored("⚠️  Instagram authentication required for saved posts.", "yellow"))
+        print(colored("   Go to 'Authentication Setup' → 'Instagram Login Setup' first.", "yellow"))
+        print("")
+    
+    options = [
+        "1. 📥 Download Instagram Saved Posts (API)",
+        "2. 🌐 Download Instagram Saved Posts (Browser)",
+        "3. ❤️  Download Instagram Liked Posts",
+        "4. ❤️  Download YouTube Liked Videos", 
+        "5. ⏰ Download YouTube Watch Later",
+        "6. 📺 Download YouTube Subscriptions Feed",
+        "7. 🔙 Back to Main Menu",
+    ]
+
+    for option in options:
+        print(option)
+
+    choice = input("\nEnter your choice: ").strip()
+
+    if choice == "1":
+        if not instagram_auth:
+            print(colored("❌ Instagram authentication required. Please set it up first.", "red"))
+            return
+        try:
+            count = int(input("Enter number of posts to download (default 50): ") or "50")
+            download_instagram_saved_posts(count)
+        except ValueError:
+            print(colored("❌ Invalid number. Using default 50.", "yellow"))
+            download_instagram_saved_posts(50)
+    elif choice == "2":
+        try:
+            count = int(input("Enter number of posts to download (default 50): ") or "50")
+            download_instagram_saved_posts_browser(count)
+        except ValueError:
+            print(colored("❌ Invalid number. Using default 50.", "yellow"))
+            download_instagram_saved_posts_browser(50)
+    elif choice == "3":
+        download_instagram_liked_posts()
+    elif choice == "4":
+        try:
+            count = int(input("Enter number of videos to download (default 50): ") or "50")
+            download_youtube_liked_videos(count)
+        except ValueError:
+            print(colored("❌ Invalid number. Using default 50.", "yellow"))
+            download_youtube_liked_videos(50)
+    elif choice == "5":
+        try:
+            count = int(input("Enter number of videos to download (default 50): ") or "50")
+            download_youtube_watch_later(count)
+        except ValueError:
+            print(colored("❌ Invalid number. Using default 50.", "yellow"))
+            download_youtube_watch_later(50)
+    elif choice == "6":
+        try:
+            count = int(input("Enter number of videos to download (default 50): ") or "50")
+            download_youtube_subscriptions_feed(count)
+        except ValueError:
+            print(colored("❌ Invalid number. Using default 50.", "yellow"))
+            download_youtube_subscriptions_feed(50)
+    elif choice == "7":
+        return
+    else:
+        print("\033[1;31mInvalid choice.\033[0m")
+
+
+def configure_browser_cookies() -> None:
+    """Configure browser for cookie extraction."""
+    print("\n\033[1;36mBrowser Configuration for YouTube/TikTok Authentication\033[0m")
+    print("─" * 60)
+    print("Available browsers:")
+    browsers = ["chrome", "firefox", "safari", "edge", "opera"]
+    
+    for i, browser in enumerate(browsers, 1):
+        print(f"{i}. {browser.capitalize()}")
+    
+    try:
+        choice = int(input("\nSelect your browser (1-5): "))
+        if 1 <= choice <= len(browsers):
+            selected_browser = browsers[choice - 1]
+            
+            # Update config
+            config = load_config()
+            config["authentication"]["cookie_browser"] = selected_browser
+            _save_config(config)
+            
+            print(colored(f"✅ Browser set to {selected_browser}!", "green"))
+            print(colored("Make sure you're logged into YouTube/TikTok in this browser.", "yellow"))
+        else:
+            print(colored("❌ Invalid choice.", "red"))
+    except ValueError:
+        print(colored("❌ Please enter a valid number.", "red"))
+
+
+def show_authentication_status() -> None:
+    """Show current authentication status."""
+    print("\n\033[1;36m📊 Authentication Status\033[0m")
+    print("─" * 40)
+    
+    # Instagram status
+    instagram_auth = is_instagram_authenticated()
+    username = get_instagram_credentials()[0] if instagram_auth else "Not configured"
+    instagram_status = "✅ Configured" if instagram_auth else "❌ Not configured"
+    
+    print(f"Instagram:")
+    print(f"  Status: {instagram_status}")
+    print(f"  Username: {username}")
+    
+    # Browser cookies status
+    browser = get_browser_cookies_path()
+    print(f"\nBrowser Cookies:")
+    print(f"  Browser: {browser}")
+    print(f"  Status: ✅ Ready (cookies will be extracted automatically)")
+    
+    # Session directory
+    session_dir = get_session_directory()
+    print(f"\nSession Storage:")
+    print(f"  Directory: {session_dir}")
+    print(f"  Exists: {'✅ Yes' if session_dir.exists() else '❌ No'}")
+    
+    input("\nPress Enter to continue...")
+
+
 # ---------------------------------
 # Main CLI Interface
 # ---------------------------------
@@ -1342,10 +2188,14 @@ def main() -> None:
             elif choice == "2":
                 instagram_menu()
             elif choice == "3":
-                check_for_updates()
+                authenticated_downloads_menu()
             elif choice == "4":
-                show_help()
+                authentication_setup_menu()
             elif choice == "5":
+                check_for_updates()
+            elif choice == "6":
+                show_help()
+            elif choice == "7":
                 print(
                     f"\033[38;2;255;105;180mThank you for using Social Media Downloader!\033[0m"
                 )
@@ -1368,9 +2218,11 @@ def _display_main_menu() -> None:
     menu_options = [
         "1. Download YouTube/TikTok... etc.",
         "2. Download Instagram",
-        "3. Check for updates",
-        "4. Help",
-        "5. Exit",
+        "3. 🔐 Authenticated Downloads (Private/Saved/Liked)",
+        "4. ⚙️  Authentication Setup",
+        "5. Check for updates",
+        "6. Help",
+        "7. Exit",
     ]
 
     for option in menu_options:

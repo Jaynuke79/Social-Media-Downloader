@@ -23,7 +23,7 @@ An example being downloading the comments of a tiktok video and saving them as a
 - ⚠️ **Instagram**: Metadata and captions - comments require login authentication  
 - ✅ **Other platforms**: Metadata support via yt-dlp
 
-### 3) Instagram Authentication for Enhanced Metadata
+#### 2.1) Instagram Authentication for Enhanced Metadata
 
 Implement Instagram login functionality to enable comment extraction and access to private content metadata.
 
@@ -42,7 +42,7 @@ Implement Instagram login functionality to enable comment extraction and access 
 - More comprehensive Instagram content archiving
 - Better analytics and research capabilities
 
-### 4) Enhanced TikTok Comment Extraction
+#### 2.2) Enhanced TikTok Comment Extraction
 
 Implement alternative TikTok comment extraction methods since yt-dlp's TikTok extractor currently doesn't support comment downloads.
 

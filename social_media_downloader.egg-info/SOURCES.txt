@@ -1,0 +1,11 @@
+LICENSE
+MANIFEST.in
+README.md
+config.json
+pyproject.toml
+requirements.txt
+setup.py
+assets/logo.ico
+smd/__init__.py
+smd/__main__.py
+smd/downloader.py
