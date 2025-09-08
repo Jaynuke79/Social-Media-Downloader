@@ -808,15 +808,20 @@ def _extract_instagram_post_links(driver, max_count: int) -> List[str]:
 
 
 def _download_instagram_posts_with_ytdlp(post_links: List[str]) -> None:
-    """Download Instagram posts using yt-dlp."""
+    """Download Instagram posts using yt-dlp with browser cookie authentication."""
     success_count = 0
+    config = load_config()
+    browser = config.get("authentication", {}).get("cookie_browser", "chrome")
     
     for i, url in enumerate(post_links, 1):
         try:
             print(colored(f"📥 Downloading post {i}/{len(post_links)}: {url}", "cyan"))
             
-            # First extract metadata to get proper uploader information
-            temp_ydl_opts = {'quiet': True}
+            # First extract metadata to get proper uploader information - with cookies
+            temp_ydl_opts = {
+                'quiet': True,
+                'cookiesfrombrowser': (browser,),
+            }
             with yt_dlp.YoutubeDL(temp_ydl_opts) as temp_ydl:
                 info = temp_ydl.extract_info(url, download=False)
             
@@ -824,6 +829,7 @@ def _download_instagram_posts_with_ytdlp(post_links: List[str]) -> None:
             organized_path = get_organized_download_path(url, info)
             
             ydl_opts = {
+                'cookiesfrombrowser': (browser,),
                 'outtmpl': f'{organized_path}/%(title)s.%(ext)s',
             }
             
@@ -854,7 +860,12 @@ def _download_instagram_posts_with_ytdlp(post_links: List[str]) -> None:
             time.sleep(1)
             
         except Exception as e:
-            print(colored(f"❌ Failed to download post {i}: {e}", "red"))
+            error_str = str(e).lower()
+            if "restricted" in error_str or "18 years" in error_str:
+                print(colored(f"❌ Failed to download post {i}: Age-restricted content", "red"))
+                print(colored(f"💡 Make sure you're logged into Instagram in your {browser} browser", "yellow"))
+            else:
+                print(colored(f"❌ Failed to download post {i}: {e}", "red"))
             log_download(url, "Failed")
     
     print(colored(f"\n🎉 Downloaded {success_count}/{len(post_links)} posts successfully!", "green"))
