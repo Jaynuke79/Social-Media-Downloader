@@ -2,8 +2,8 @@
 
 # ====================================================
 # SMD Local Installer - Social Media Downloader
-# Author: nayandas69
-# Repo: https://github.com/nayandas69/Social-Media-Downloader
+# Author: Jaynuke79
+# Repo: https://github.com/Jaynuke79/Social-Media-Downloader
 # License: MIT
 # ====================================================
 
@@ -21,7 +21,7 @@ function show_header() {
     echo -e "\e[96m===========================================\e[0m"
     echo -e "\e[1;95m       SMD Local Installer - v2.0         \e[0m"
     echo -e "\e[96m===========================================\e[0m"
-    echo -e "\e[93mAuthor:\e[0m nayandas69"
+    echo -e "\e[93mAuthor:\e[0m Jaynuke79"
     echo -e "\e[93mSource:\e[0m Local Repository"
     echo -e "\e[93mPath  :\e[0m $SCRIPT_DIR"
     echo ""

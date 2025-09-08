@@ -55,13 +55,13 @@ from tabulate import tabulate
 # ---------------------------------
 # Constants and Configuration
 # ---------------------------------
-AUTHOR = "Nayan Das"
-CURRENT_VERSION = "1.1.12"
-EMAIL = "nayanchandradas@hotmail.com"
-DISCORD_INVITE = "https://discord.gg/skHyssu"
-WEBSITE = "https://nayandas69.github.io/Social-Media-Downloader"
-GITHUB_REPO_URL = "https://github.com/nayandas69/Social-Media-Downloader"
-PYPI_API_URL = "https://pypi.org/pypi/social-media-downloader/json"
+AUTHOR = "Jaynuke79"
+CURRENT_VERSION = "0.5"
+EMAIL = "jaynuke79@gmail.com"
+DISCORD_INVITE = "NAH"
+WEBSITE = "https://Jaynuke79.github.io/Social-Media-Downloader"
+GITHUB_REPO_URL = "https://github.com/Jaynuke79/Social-Media-Downloader"
+PYPI_API_URL = "NADA"
 
 # Configuration constants
 CONFIG_FILE = "config.json"

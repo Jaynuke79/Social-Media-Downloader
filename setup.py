@@ -32,7 +32,7 @@ setup(
     long_description_content_type="text/markdown",
     author="Nayan Das",
     author_email="nayanchandradas@hotmail.com",
-    url="https://github.com/nayandas69/Social-Media-Downloader",
+    url="https://github.com/Jaynuke79/Social-Media-Downloader",
     packages=find_packages(include=['smd', 'smd.*']),
     python_requires=">=3.10",
     install_requires=[
